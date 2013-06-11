@@ -1,0 +1,328 @@
+--[[
+    ccTwitterFeed v1.02
+    Author: Espen
+    
+    Control keys:
+        DOWN/RIGHT  - Show next tweet
+        UP/LEFT     - Show previous tweet
+        +/-         - Increase/Decrease number of tweets to flips through
+        T           - Toggle auto flip
+        Q           - Quit program
+]]
+
+
+
+-- [[ === CONFIGURATION BEGIN ======================================================= ]]
+
+-- Time in seconds before refreshing cached tweets from web.
+local pullDelay = 120   -- Default: 120
+-- Time in seconds for automatic flipping of displayed tweets.
+local flipDelay = 10    -- Default: 10
+-- Enables / Disables automatic tweet flip. (Can also be set via command line parameter!)
+local bAutoFlip = false -- Default: false
+
+-- [[ === CONFIGURATION END ========================================================= ]]
+
+local bFileMode = false
+local tArgs = { ... }
+
+dofile( shell.resolve( './UTILS' ) )
+
+if not keys then
+  keys = {}
+  keys.left  = 203
+  keys.right = 205
+  keys.up    = 200
+  keys.down  = 208
+end
+
+
+function printUsage()
+  local progName = shell.getRunningProgram()
+  progName = fs.getName( "/"..progName )
+  --term.clear()
+  --term.setCursorPos(1, 1)
+  write( "Usage (choose one):\n"..progName.." <" ) UTILS:writeColored( "SCREEN_NAME", colors.orange ) write( "> [" ) UTILS:writeColored( "COUNT", colors.cyan ) write( "] [" ) UTILS:writeColored( "RTS", colors.cyan ) print( "]" )
+  write( progName.." -F <" ) UTILS:writeColored( "FILENAME", colors.orange ) print( ">" )
+  print( string.rep("-", 50) )
+  UTILS:writeColored( "SCREEN_NAME", colors.orange ) print( "  Obligatory; e.g. 'jeb_'" )
+  UTILS:writeColored( "COUNT", colors.cyan ) print( "        Optional;   e.g. '150'" )
+  print( string.rep(" ", 25).."Default: 20, Max: 200" )
+  UTILS:writeColored( "RTS", colors.cyan ) print( "          Optional;   'TRUE' = Show retweets" )
+  print( string.rep(" ", 25).."'FALSE' = Ignore retweets" )
+  print( string.rep(" ", 25).."Default: 'TRUE'" )
+  UTILS:writeColored( "FILENAME", colors.orange ) print( "     Obligatory; e.g. 'last_tweets'" )
+end
+
+if #tArgs < 1 then printUsage() return end
+if string.lower( tArgs[1] ) == "-f" then
+  if tArgs[2] then
+    local sFilePath = shell.resolve( tArgs[2] )
+    if sFilePath then
+      tArgs[2] = sFilePath
+      table.remove( tArgs, 1 )
+      bFileMode = true
+    else
+      print()
+      error( "Filepath could not be resolved." )
+    end
+  else
+    printUsage()
+    return
+  end
+end
+if tArgs[2] and type( tonumber( tArgs[2] ) ) ~= "number" then printUsage() return end
+if tArgs[3] and not (string.lower(tArgs[3]) == "true" or string.lower(tArgs[3]) == "false") then printUsage() return end
+
+local tTweetSpecs = {}
+tTweetSpecs.screen_name = tArgs[1]
+tTweetSpecs.count = tonumber( tArgs[2] ) or 20    -- Default is 20, or as provided by the user.
+tTweetSpecs.include_rts = tArgs[3] == "false" and 0 or 1    -- Default is 1, or as provided by the user.
+
+--[[ DEBUG
+print( "screen_name = "..tostring(tTweetSpecs.screen_name) )
+print( "count = "..tostring(tTweetSpecs.count) )
+print( "include_rts = "..tostring(tTweetSpecs.include_rts) )
+do return end
+--]]
+
+dofile( shell.resolve( './XMLParser/xml.lua' ) )
+dofile( shell.resolve( './XMLParser/handler.lua' ) )
+
+
+local tweets = { current = 1 }
+tweets.handler = simpleTreeHandler()    -- Setup XML handler.
+tweets.parser = xmlParser( tweets.handler )    -- Setup XML parser.
+tweets.nDisplayLimit = 5    -- Setup default for maximum display limit.
+
+function tweets.showCurrentTweet( self )
+  if self.handler.root.statuses == nil then self:pullTwitterData() end
+  --self.nDisplayLimit = self.nDisplayLimit or 5
+  --self.current = self.current + 1
+  --if self.current > self.nDisplayLimit then self.current = 1 end
+  
+  local currentStatus = self.handler.root.statuses.status[self.current]
+  term.clear()
+  term.setCursorPos( 1, 1 )
+  UTILS:printColored( currentStatus.text.."\n", colors.yellow )
+  local _, maxY = term.getSize()
+  term.setCursorPos( 1, maxY - 3 )
+  print( "@"..currentStatus.user.screen_name )
+  print( currentStatus.created_at )
+  
+  return self.current
+end
+
+-- Prints the next tweet and returns its number.
+function tweets.showNextTweet( self )
+  self.current = self.current + 1
+  if self.current > self.nDisplayLimit then self.current = 1 end
+  return self:showCurrentTweet()
+end
+
+function tweets.printStatusLine( self )
+  local _, maxY = term.getSize()
+  term.setCursorPos( 1, maxY )
+  term.clearLine()
+  --write( "Current: "..self.current.." / Max: "..self.nDisplayLimit.." / Cached: "..#self.handler.root.statuses.status )
+  UTILS:writeColored( "Current: ", colors.lightGray ) UTILS:writeColored( self.current, colors.lightBlue )
+    write( " / " ) UTILS:writeColored( "Max: ", colors.lightGray ) UTILS:writeColored( self.nDisplayLimit, colors.lightBlue )
+      write( " / " ) UTILS:writeColored( "Cached: ", colors.gray ) UTILS:writeColored( #self.handler.root.statuses.status, colors.green )
+end
+
+-- Prints the previous tweet and returns its number.
+-- TODO: Do this proper and don't do it with the dirty, quick cheat like this! :P
+function tweets.showPreviousTweet( self )
+  --self.nDisplayLimit = self.nDisplayLimit or 5
+  self.current = self.current - 1
+  if self.current < 1 then self.current = self.nDisplayLimit end
+  return self:showCurrentTweet()
+end
+
+function tweets.setDisplayLimit( self, nDelta )
+  self.nDisplayLimit = self.nDisplayLimit + nDelta
+  -- Make sure nDisplayLimit stays within these constraints: 0 < nDisplayLimit < #cached_tweets
+  if self.nDisplayLimit < 1 then self.nDisplayLimit = 1 end
+  if self.nDisplayLimit > #self.handler.root.statuses.status then self.nDisplayLimit = #self.handler.root.statuses.status end
+  
+  if self.current > self.nDisplayLimit then self.current = self.nDisplayLimit end
+  tweets:showCurrentTweet()
+end
+
+local function getHTTPBody( url )
+  http.request( url )
+  for response, _, body in os.pullEvent do
+    if ( #response > 4 ) and ( string.sub( response, 1, 4 ) == "http" ) then
+      return response, body
+    end
+  end
+end
+
+local function showLoadBox()
+  UTILS:writeCentered( "---------------------", nil, -1, colors.lightBlue )
+  UTILS:writeCentered( "| Loading Tweets... |", nil, nil, colors.lightBlue )
+  UTILS:writeCentered( "---------------------", nil, 1, colors.lightBlue )
+  sleep(2)
+end
+
+local function saveToCacheFile( _sContent, _sFilePath )
+  local sResolvedPath = shell.resolve( _sFilePath )
+  
+  if sResolvedPath then
+    local hFile = fs.open( sResolvedPath, "w" )
+    if not hFile then print() error( "Cache file could not be written." ) end
+    hFile.write( _sContent )
+    hFile.close()
+  else
+    print()
+    error( "Filepath could not be resolved." )
+  end
+end
+
+function tweets.pullTwitterData( self )
+  showLoadBox()
+  
+  local xmlString
+  --[[ LOAD FROM WEB ]]
+  if not bFileMode then
+    local url = "http://api.twitter.com/1/statuses/user_timeline.xml?screen_name="..tTweetSpecs.screen_name.."&include_rts="..tTweetSpecs.include_rts.."&count="..tTweetSpecs.count
+    --local url = "http://www.google.com/"
+    local sSuccess, hResponse = getHTTPBody( url )
+    if sSuccess == "http_success" and hResponse then
+      xmlString = hResponse:readAll()
+      saveToCacheFile( xmlString, "last_tweets" )
+    else
+      print()
+      error( "\nCouldn't pull data from twitter.\nCheck screen name or other parameters.\nAlso only pull PUBLIC tweets!\nAnd don't pull too frequently or twitter will temp-block you." )
+    end
+    --print( "Success = "..sSuccess..", Body:" )
+    --print( xmlString )
+  
+  --[[ LOAD FROM FILE ]]
+  elseif bFileMode then
+    -- Load XML data from file
+    local hFile = io.open( tArgs[1], "r" )
+    if hFile then
+      xmlString = hFile:read( "*a" )
+      hFile:close()
+      if hFile.bClosed then hFile = nil end    -- Remove handler reference if file is indeed closed.
+    else
+      print()
+      error( "File not found." )
+    end
+  end
+  
+  self.parser:parse( xmlString )    -- Parse XML data.
+end
+
+function printFlipCountdown( nCounter )
+  tweets:printStatusLine()
+  local x, y = term.getCursorPos()
+  local maxX, maxY = term.getSize()
+  local outputLen = string.len( "Auto-Flip: "..tostring(nCounter).."s" )
+  term.setCursorPos( maxX - outputLen, maxY )
+  UTILS:writeColored( "Auto-Flip: ", colors.orange ) write( nCounter ) UTILS:writeColored( "s", colors.orange )
+end
+
+function initFirstDisplay()
+  term.clear()
+  term.setCursorPos(2, 2)
+  showLoadBox()
+  tweets:showCurrentTweet()
+  tweets:printStatusLine()
+end
+
+
+-- [[ === MAIN ====================================================================== ]]
+
+local timerPullDelay    -- Delay before refreshing local tweet data.
+local timerFlipDelay    -- Delay before displaying next tweet.
+local timerCountdown    -- Clock for refreshing countdown display (which shows when the next tweet will be displayed).
+local nFlipDelayCounter = flipDelay    -- For counting down the seconds before the next flip.
+
+initFirstDisplay()
+timerPullDelay = os.startTimer( pullDelay )
+if bAutoFlip then os.queueEvent("autoflip") end -- Turn on autoflip at the start if requested.
+while true do
+  local sEvent, param1 = os.pullEvent()
+  
+  -- Refresh tweets (i.e. pull the newest from twitter).
+  if sEvent == "timer" and param1 == timerPullDelay then
+    timerFlipDelay = nil       -- Stop flip delay timer.
+    timerCountdown = nil       -- Stop flip delay counter.
+    
+    tweets:pullTwitterData()   -- Pull XML data.
+    tweets:showCurrentTweet()
+    tweets:printStatusLine()
+    timerPullDelay = os.startTimer( pullDelay )    -- Restart timer.
+    
+    if bAutoFlip then
+      nFlipDelayCounter = flipDelay    -- Reset flip delay counter.
+      printFlipCountdown( nFlipDelayCounter )
+      timerFlipDelay = os.startTimer( flipDelay )    -- (Re-)Start flip delay timer.
+      timerCountdown = os.startTimer( 1 )   -- (Re-)Start flip delay counter.
+    end
+  end
+  
+  -- Show next tweet.
+  if sEvent == "timer" and param1 == timerFlipDelay and bAutoFlip then
+    tweets:showNextTweet()
+    nFlipDelayCounter = flipDelay    -- Reset flip delay counter.
+    printFlipCountdown( nFlipDelayCounter )
+    timerFlipDelay = os.startTimer( flipDelay )    -- Restart timer.
+
+  -- Update flip countdown display.
+  elseif sEvent == "timer" and param1 == timerCountdown then
+    if bAutoFlip then
+      nFlipDelayCounter = nFlipDelayCounter - 1
+      printFlipCountdown( nFlipDelayCounter )
+    end
+    timerCountdown = os.startTimer( 1 )
+  
+  -- UP or LEFT: previous tweet
+  elseif sEvent == "key" and ( param1 == keys.up or param1 == keys.left ) then
+    tweets:showPreviousTweet()
+    tweets:printStatusLine()
+    if bAutoFlip then printFlipCountdown( nFlipDelayCounter ) end
+  
+  -- DOWN or RIGHT: next tweet
+  elseif sEvent == "key" and ( param1 == keys.down or param1 == keys.right ) then
+    tweets:showNextTweet()
+    tweets:printStatusLine()
+    if bAutoFlip then printFlipCountdown( nFlipDelayCounter ) end
+  
+  -- PLUS: increase display limit
+  elseif sEvent == "char" and param1 == "+" then
+    tweets:setDisplayLimit( 1 )
+    tweets:printStatusLine()
+    if bAutoFlip then printFlipCountdown( nFlipDelayCounter ) end
+  
+  -- MINUS: decrease display limit
+  elseif sEvent == "char" and param1 == "-" then
+    tweets:setDisplayLimit( -1 )
+    tweets:printStatusLine()
+    if bAutoFlip then printFlipCountdown( nFlipDelayCounter ) end
+  
+  -- T: Flip-Timer Toggle.
+  elseif sEvent == "char" and string.lower( param1 ) == "t" then
+    os.queueEvent("autoflip", true)
+
+  -- Handle autoflip
+  -- elseif sEvent == "char" and string.lower( param1 ) == "t" then
+  elseif sEvent == "autoflip" then
+    if param1 == true then bAutoFlip = not bAutoFlip end  -- Toggle Auto Flip.
+    if bAutoFlip then
+      tweets:printStatusLine()
+      nFlipDelayCounter = flipDelay    -- Reset flip delay counter.
+      printFlipCountdown( nFlipDelayCounter )
+      timerFlipDelay = os.startTimer( flipDelay )    -- (Re-)Start flip delay timer.
+      timerCountdown = os.startTimer( 1 )   -- (Re-)Start flip delay counter.
+    else
+      timerFlipDelay = nil
+      tweets:printStatusLine()
+    end
+  end
+  
+  -- Quit program.
+  if sEvent == "char" and string.lower( param1 ) == "q" then print() break end
+end

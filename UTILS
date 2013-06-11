@@ -1,0 +1,42 @@
+UTILS = {}
+
+function UTILS.writeColored( self, _sText, _nColor )
+  if _nColor and term.isColor and term.isColor() then
+    term.setTextColor( _nColor )
+    write( _sText )
+    term.setTextColor( 1 )  -- colors.white
+  else
+    write( _sText )
+  end
+end
+
+function UTILS.printColored( self, _sText, _nColor )
+  if _nColor and term.isColor and term.isColor() then
+    term.setTextColor( _nColor )
+    print( _sText )
+    term.setTextColor( 1 )  -- colors.white
+  else
+    print( _sText )
+  end
+end
+
+-- Writes text centered, x- and y-axis position can be offset, and the line to be written can be cleared beforehand.
+function UTILS.writeCentered( self, sText, nOffsetX, nOffsetY, color, bClearLine )
+  local maxX, maxY = term.getSize()
+  
+  if nOffsetX == null then nOffsetX = 0 end
+  local centeredX = (maxX / 2) - (string.len( sText ) / 2) + nOffsetX
+  
+  if nOffsetY == null then nOffsetY = 0 end
+  local centeredY = (maxY / 2) + nOffsetY
+  
+  term.setCursorPos( centeredX, centeredY )
+  if bClearLine then term.clearLine() end
+  if color then
+    self:writeColored( sText, color )
+  else
+    write( sText )
+  end
+end
+
+return UTILS
